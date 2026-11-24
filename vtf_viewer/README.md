@@ -1,0 +1,1 @@
+Valve Texture Format Viewer (VTFViewver, VTFEdit) - улучшеный способ создания и просмотра текструры

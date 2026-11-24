@@ -1,9 +1,10 @@
 
+import math
 import os
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageDraw
 from tkinterdnd2 import DND_FILES
 
 from vtf.reader import VTFReader
@@ -11,7 +12,7 @@ from vtf.reader import VTFReader
 
 class VTViewer:
 
-    def __init__(self, root):
+    def __init__(self, root, filepath=None):
 
         self.root = root
 
@@ -35,6 +36,10 @@ class VTViewer:
 
         self.drag_start = None
         self.checkerboard = True
+        self.repeat_images = False
+        self.repeat = False
+        self.repeat_var = None
+        self._repeat_photo = None
 
         self.bg = "#202020"
         self.panel_bg = "#292929"
@@ -55,6 +60,9 @@ class VTViewer:
             "WM_DELETE_WINDOW",
             self.close_application
         )
+
+        if filepath:
+            self.open_file(filepath)
 
     # ---------------------------------------------
     # MENU
@@ -121,6 +129,17 @@ class VTViewer:
 
         view_menu.add_separator()
 
+        self.repeat_var = tk.BooleanVar(
+            self.root,
+            value=False
+        )
+
+        view_menu.add_checkbutton(
+            label="Повторять изображения",
+            variable=self.repeat_var,
+            command=self.toggle_repeat
+        )
+
         view_menu.add_command(
             label="Шахматный фон",
             command=self.toggle_checkerboard
@@ -144,7 +163,13 @@ class VTViewer:
             bg=self.bg
         )
 
-        main.pack(fill="both", expand=True)
+        main.pack(
+            fill="both",
+            expand=True
+        )
+
+        main.grid_rowconfigure(0, weight=1)
+        main.grid_columnconfigure(1, weight=1)
 
         # ---------------------------------------------
         # SIDEBAR
@@ -156,12 +181,13 @@ class VTViewer:
             width=245
         )
 
-        self.sidebar.pack(
-            side="left",
-            fill="y"
+        self.sidebar.grid(
+            row=0,
+            column=0,
+            sticky="ns"
         )
 
-        self.sidebar.pack_propagate(False)
+        self.sidebar.grid_propagate(False)
 
         self.create_sidebar()
 
@@ -175,10 +201,10 @@ class VTViewer:
             highlightthickness=0
         )
 
-        self.canvas.pack(
-            side="right",
-            fill="both",
-            expand=True
+        self.canvas.grid(
+            row=0,
+            column=1,
+            sticky="nsew"
         )
 
         self.draw_empty()
@@ -197,7 +223,11 @@ class VTViewer:
             pady=4
         )
 
-        self.status.pack(fill="x", side="bottom")
+        self.status.pack(
+            fill="x",
+            side="bottom"
+        )
+
 
     # ---------------------------------------------
     # SIDEBAR
@@ -205,28 +235,126 @@ class VTViewer:
 
     def create_sidebar(self):
 
+        # Контейнер боковой панели
+        self.right_side = tk.Frame(
+            self.sidebar,
+            bg=self.panel_bg
+        )
+
+        self.right_side.pack(
+            fill="both",
+            expand=True
+        )
+
+        self.right_side.grid_rowconfigure(0, weight=1)
+        self.right_side.grid_columnconfigure(0, weight=1)
+
+        # Canvas для прокрутки
+        self.sidebar_canvas = tk.Canvas(
+            self.right_side,
+            bg=self.panel_bg,
+            highlightthickness=0,
+            borderwidth=0
+        )
+
+        self.sidebar_canvas.grid(
+            row=0,
+            column=0,
+            sticky="nsew"
+        )
+
+        # Scrollbar
+        self.sidebar_scrollbar = ttk.Scrollbar(
+            self.right_side,
+            orient="vertical",
+            command=self.sidebar_canvas.yview
+        )
+
+        self.sidebar_scrollbar.grid(
+            row=0,
+            column=1,
+            sticky="ns"
+        )
+
+        self.sidebar_canvas.configure(
+            yscrollcommand=self.sidebar_scrollbar.set
+        )
+
+        # Внутренняя панель с элементами
+        self.sidebar_content = tk.Frame(
+            self.sidebar_canvas,
+            bg=self.panel_bg
+        )
+
+        self.sidebar_window = self.sidebar_canvas.create_window(
+            (0, 0),
+            window=self.sidebar_content,
+            anchor="nw"
+        )
+
+        # Обновление области прокрутки
+        self.sidebar_content.bind(
+            "<Configure>",
+            self.update_sidebar_scroll
+        )
+
+        # Подгонка ширины внутренней панели
+        self.sidebar_canvas.bind(
+            "<Configure>",
+            self.resize_sidebar_content
+        )
+
+        # Прокрутка колёсиком
+        self.sidebar_canvas.bind(
+            "<Enter>",
+            self.bind_sidebar_mousewheel
+        )
+
+        self.sidebar_canvas.bind(
+            "<Leave>",
+            self.unbind_sidebar_mousewheel
+        )
+
+        # ---------------------------------------------
+        # FILE
+        # ---------------------------------------------
+
         self.add_section("ФАЙЛ")
 
         self.file_label = self.add_info("Файл", "-")
         self.version_label = self.add_info("Версия", "-")
         self.size_label = self.add_info("Размер файла", "-")
 
+        # ---------------------------------------------
+        # IMAGE
+        # ---------------------------------------------
+
         self.add_section("ИЗОБРАЖЕНИЕ")
 
         self.resolution_label = self.add_info("Разрешение", "-")
         self.format_label = self.add_info("Формат", "-")
         self.frames_label = self.add_info("Кадры", "-")
+
         self.image_state_label = self.add_info(
             "Состояние изображения",
             "Не загружено"
         )
+
         self.mipmaps_label = self.add_info("MipMaps", "-")
         self.depth_label = self.add_info("Глубина", "-")
+
+        # ---------------------------------------------
+        # VIEW
+        # ---------------------------------------------
 
         self.add_section("ПРОСМОТР")
 
         self.zoom_label = self.add_info("Масштаб", "100%")
         self.position_label = self.add_info("Позиция", "0, 0")
+
+        # ---------------------------------------------
+        # CONTROLS
+        # ---------------------------------------------
 
         self.add_section("УПРАВЛЕНИЕ")
 
@@ -234,10 +362,57 @@ class VTViewer:
         self.add_button("Вписать изображение", self.fit_image)
         self.add_button("Шахматный фон", self.toggle_checkerboard)
 
+
+    # ---------------------------------------------
+    # SIDEBAR SCROLL
+    # ---------------------------------------------
+
+    def update_sidebar_scroll(self, event=None):
+
+        self.sidebar_canvas.configure(
+            scrollregion=self.sidebar_canvas.bbox("all")
+        )
+
+
+    def resize_sidebar_content(self, event):
+
+        self.sidebar_canvas.itemconfigure(
+            self.sidebar_window,
+            width=event.width
+        )
+
+
+    def bind_sidebar_mousewheel(self, event=None):
+
+        self.sidebar_canvas.bind_all(
+            "<MouseWheel>",
+            self.on_sidebar_mousewheel
+        )
+
+
+    def unbind_sidebar_mousewheel(self, event=None):
+
+        self.sidebar_canvas.unbind_all(
+            "<MouseWheel>"
+        )
+
+
+    def on_sidebar_mousewheel(self, event):
+
+        self.sidebar_canvas.yview_scroll(
+            -int(event.delta / 120),
+            "units"
+        )
+
+
+    # ---------------------------------------------
+    # SIDEBAR ELEMENTS
+    # ---------------------------------------------
+
     def add_section(self, text):
 
         tk.Label(
-            self.sidebar,
+            self.sidebar_content,
             text=text,
             bg=self.panel_bg,
             fg="#75a9df",
@@ -245,16 +420,31 @@ class VTViewer:
             anchor="w",
             padx=12,
             pady=12
-        ).pack(fill="x")
+        ).pack(
+            fill="x"
+        )
+
+        ttk.Separator(
+            self.sidebar_content,
+            orient="horizontal"
+        ).pack(
+            fill="x",
+            padx=10
+        )
+
 
     def add_info(self, title, value):
 
         frame = tk.Frame(
-            self.sidebar,
+            self.sidebar_content,
             bg=self.panel_bg
         )
 
-        frame.pack(fill="x", padx=12, pady=3)
+        frame.pack(
+            fill="x",
+            padx=12,
+            pady=3
+        )
 
         tk.Label(
             frame,
@@ -263,7 +453,9 @@ class VTViewer:
             fg=self.muted,
             font=("Segoe UI", 9),
             anchor="w"
-        ).pack(fill="x")
+        ).pack(
+            fill="x"
+        )
 
         label = tk.Label(
             frame,
@@ -274,14 +466,17 @@ class VTViewer:
             anchor="w"
         )
 
-        label.pack(fill="x")
+        label.pack(
+            fill="x"
+        )
 
         return label
+
 
     def add_button(self, text, command):
 
         tk.Button(
-            self.sidebar,
+            self.sidebar_content,
             text=text,
             command=command,
             bg="#383838",
@@ -291,7 +486,11 @@ class VTViewer:
             relief="flat",
             padx=8,
             pady=6
-        ).pack(fill="x", padx=12, pady=3)
+        ).pack(
+            fill="x",
+            padx=12,
+            pady=3
+        )
 
     # ---------------------------------------------
     # BINDINGS
@@ -409,9 +608,10 @@ class VTViewer:
         else:
             self.redraw()
 
-        if info["image_error"]:
+        image_error = info.get("image_error")
+        if image_error:
             self.status.config(
-                text=f'Файл открыт. Изображение: {info["image_error"]}'
+                text=f"Файл открыт. Изображение: {image_error}"
             )
         else:
             self.status.config(
@@ -469,15 +669,8 @@ class VTViewer:
     # ---------------------------------------------
 
     def draw_empty(self):
-
-        self.canvas.create_text(
-            400,
-            300,
-            text="Перетащите VTF сюда\nили нажмите Ctrl + O",
-            fill=self.muted,
-            font=("Segoe UI", 14),
-            justify="center"
-        )
+        self.canvas.delete("empty")
+        self.redraw()
 
     # ---------------------------------------------
     # CHECKERBOARD
@@ -490,31 +683,82 @@ class VTViewer:
         if not self.checkerboard or self.image is None:
             return
 
-        size = 16
-
         width = self.canvas.winfo_width()
         height = self.canvas.winfo_height()
 
-        colors = ("#282828", "#383838")
+        if width <= 1 or height <= 1:
+            return
 
-        for y in range(0, height, size):
-            for x in range(0, width, size):
+        size = 16
 
-                color = colors[
-                    ((x // size) + (y // size)) % 2
-                ]
+        colors = (
+            "#282828",
+            "#383838"
+        )
 
-                self.canvas.create_rectangle(
-                    x, y,
-                    x + size, y + size,
-                    fill=color,
-                    outline="",
-                    tags="checker"
-                )
+        cache_key = (
+            width,
+            height,
+            size,
+            colors
+        )
+
+        # Создаём фон только при изменении размеров
+        if getattr(self, "_checker_cache_key", None) != cache_key:
+
+            background = Image.new(
+                "RGB",
+                (width, height),
+                colors[0]
+            )
+
+            draw = ImageDraw.Draw(background)
+
+            for y in range(0, height, size):
+                for x in range(0, width, size):
+
+                    if ((x // size) + (y // size)) % 2:
+
+                        draw.rectangle(
+                            (
+                                x,
+                                y,
+                                x + size - 1,
+                                y + size - 1
+                            ),
+                            fill=colors[1]
+                        )
+
+            self._checker_photo = ImageTk.PhotoImage(background)
+            self._checker_cache_key = cache_key
+
+        self.canvas.create_image(
+            0,
+            0,
+            image=self._checker_photo,
+            anchor="nw",
+            tags="checker"
+        )
+
+        self.canvas.tag_lower("checker")
+
 
     def toggle_checkerboard(self):
 
         self.checkerboard = not self.checkerboard
+
+        self.redraw()
+
+    def toggle_repeat(self):
+
+        if self.repeat_var is not None:
+            enabled = bool(self.repeat_var.get())
+        else:
+            enabled = not self.repeat_images
+
+        self.repeat_images = enabled
+        self.repeat = enabled
+
         self.redraw()
 
     # ---------------------------------------------
@@ -522,18 +766,21 @@ class VTViewer:
     # ---------------------------------------------
 
     def redraw(self):
-
         self.canvas.delete("image")
         self.canvas.delete("empty")
 
         self.draw_checkerboard()
 
         if self.image is None:
+            if self.file_path is None:
+                message = "Перетащите VTF сюда\nили нажмите Ctrl + O"
+            else:
+                message = "Изображение недоступно\nДанные VTF прочитаны"
 
             self.canvas.create_text(
                 self.canvas.winfo_width() // 2,
                 self.canvas.winfo_height() // 2,
-                text="Изображение недоступно\nДанные VTF прочитаны",
+                text=message,
                 fill=self.muted,
                 font=("Segoe UI", 14),
                 justify="center",
@@ -542,28 +789,154 @@ class VTViewer:
 
             return
 
-        width = max(
-            1,
-            round(self.image.width * self.scale)
+        repeat_enabled = (
+            getattr(self, "repeat_images", False)
+            or getattr(self, "repeat", False)
         )
 
-        height = max(
-            1,
-            round(self.image.height * self.scale)
+        if repeat_enabled:
+            canvas_width = self.canvas.winfo_width()
+            canvas_height = self.canvas.winfo_height()
+
+            if canvas_width > 1 and canvas_height > 1:
+                if self.checkerboard:
+                    base = Image.new(
+                        "RGBA",
+                        (canvas_width, canvas_height),
+                        (56, 56, 56, 255)
+                    )
+                    draw = ImageDraw.Draw(base)
+                    size = 16
+
+                    for y in range(0, canvas_height, size):
+                        for x in range(0, canvas_width, size):
+                            if ((x // size) + (y // size)) % 2:
+                                draw.rectangle(
+                                    (
+                                        x,
+                                        y,
+                                        min(x + size - 1, canvas_width - 1),
+                                        min(y + size - 1, canvas_height - 1)
+                                    ),
+                                    fill=(32, 32, 32, 255)
+                                )
+                else:
+                    base = Image.new(
+                        "RGBA",
+                        (canvas_width, canvas_height),
+                        (21, 21, 21, 255)
+                    )
+
+                scale = max(0.001, self.scale)
+                tile_width = max(1, round(self.image.width * scale))
+                tile_height = max(1, round(self.image.height * scale))
+                resized = self.image.resize(
+                    (tile_width, tile_height),
+                    Image.Resampling.BILINEAR
+                ).convert("RGBA")
+
+                first_x = math.floor(-self.offset_x / tile_width)
+                last_x = math.ceil((canvas_width - self.offset_x) / tile_width)
+                first_y = math.floor(-self.offset_y / tile_height)
+                last_y = math.ceil((canvas_height - self.offset_y) / tile_height)
+
+                for tile_y in range(first_y, last_y):
+                    y = round(self.offset_y + tile_y * tile_height)
+
+                    for tile_x in range(first_x, last_x):
+                        x = round(self.offset_x + tile_x * tile_width)
+                        base.paste(
+                            resized,
+                            (x, y),
+                            resized.getchannel("A")
+                        )
+
+                self._repeat_photo = ImageTk.PhotoImage(base)
+                self.canvas.create_image(
+                    0,
+                    0,
+                    image=self._repeat_photo,
+                    anchor="nw",
+                    tags="image"
+                )
+
+            self.zoom_label.config(
+                text=f"{self.scale * 100:.1f}%"
+            )
+            self.position_label.config(
+                text=f"{self.offset_x:.0f}, {self.offset_y:.0f}"
+            )
+
+            return
+
+        scale = max(0.001, self.scale)
+
+        image_width = self.image.width
+        image_height = self.image.height
+
+        width = round(image_width * scale)
+        height = round(image_height * scale)
+
+        canvas_width = self.canvas.winfo_width()
+        canvas_height = self.canvas.winfo_height()
+
+        # Видимая часть изображения в исходных координатах
+        left = max(0, int(-self.offset_x / scale))
+        top = max(0, int(-self.offset_y / scale))
+
+        right = min(
+            image_width,
+            int((canvas_width - self.offset_x) / scale) + 1
         )
 
-        resized = self.image.resize(
-            (width, height),
-            Image.Resampling.LANCZOS
+        bottom = min(
+            image_height,
+            int((canvas_height - self.offset_y) / scale) + 1
+        )
+
+        # Изображение полностью за пределами окна
+        if right <= left or bottom <= top:
+            self.canvas.create_rectangle(
+                self.offset_x,
+                self.offset_y,
+                self.offset_x + width,
+                self.offset_y + height,
+                outline="#777777",
+                width=1,
+                tags="image"
+            )
+            return
+
+        # Вырезаем только видимую часть
+        cropped = self.image.crop(
+            (left, top, right, bottom)
+        )
+
+        resized = cropped.resize(
+            (
+                max(1, round(cropped.width * scale)),
+                max(1, round(cropped.height * scale))
+            ),
+            Image.Resampling.BILINEAR
         )
 
         self.photo = ImageTk.PhotoImage(resized)
 
         self.canvas.create_image(
-            self.offset_x,
-            self.offset_y,
+            self.offset_x + left * scale,
+            self.offset_y + top * scale,
             image=self.photo,
             anchor="nw",
+            tags="image"
+        )
+
+        self.canvas.create_rectangle(
+            self.offset_x,
+            self.offset_y,
+            self.offset_x + width,
+            self.offset_y + height,
+            outline="#777777",
+            width=1,
             tags="image"
         )
 
@@ -651,13 +1024,31 @@ class VTViewer:
         if self.image is None:
             return
 
+        self.canvas.update_idletasks()
+
+        width = self.canvas.winfo_width()
+        height = self.canvas.winfo_height()
+
         self.scale = 1.0
+
+        # Центрируем изображение
+        self.offset_x = (
+            width - self.image.width
+        ) / 2
+
+        self.offset_y = (
+            height - self.image.height
+        ) / 2
+
         self.redraw()
+
 
     def fit_image(self):
 
         if self.image is None:
             return
+
+        self.canvas.update_idletasks()
 
         width = self.canvas.winfo_width()
         height = self.canvas.winfo_height()
